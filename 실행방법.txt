@@ -1,25 +1,29 @@
-웹 UI 실행 방법:
+산업안전보건관리비 진위여부 확인 시스템 - 실행 방법
+=============================================
 
-Windows에서 명령 프롬프트 여는 방법:
-키보드 Win + R → cmd 입력 → Enter
-또는 시작 메뉴에서 "명령 프롬프트" 검색
+[사전 준비]
+- Python 3.8 이상 설치 필요 (https://www.python.org/downloads/)
+  설치 시 "Add Python to PATH" 반드시 체크
 
+[최초 1회] 패키지 설치
+  명령 프롬프트(Win+R → cmd → Enter)에서:
 
-1. 터미널(명령 프롬프트)에서 실행
+  cd "다운받은 폴더 경로"
+  pip install -r requirements.txt
 
-cd "c:\Users\Admin\Desktop\project\safety ocr_project"
-python app_web.py
+[실행 방법]
+  1. 명령 프롬프트에서 실행:
+     cd "다운받은 폴더 경로"
+     python app_web.py
 
-2. 브라우저 자동 열림
+  2. 브라우저가 자동으로 열립니다 (http://localhost:5000)
+     안 열리면 브라우저에서 직접 http://localhost:5000 입력
 
-실행하면 http://localhost:5000 이 자동으로 열립니다
-안 열리면 브라우저에서 직접 http://localhost:5000 입력
+  3. 종료: 명령 프롬프트에서 Ctrl+C
 
-3. 종료
-
-터미널에서 Ctrl+C
-필수 파일 3개 (같은 폴더에 있어야 함):
-
-app_web.py — 웹 서버
-df_qr_batch.py — QR 추출 엔진
-hometax_verify.py — 홈택스 검증 엔진
+[필수 파일] (같은 폴더에 있어야 함)
+  app_web.py         — 웹 서버
+  df_qr_batch.py     — QR 추출 엔진
+  hometax_verify.py  — 홈택스 검증 엔진
+  data.xlsx          — 증빙자료 기준 데이터
+  requirements.txt   — 패키지 목록
