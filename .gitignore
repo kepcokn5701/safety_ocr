@@ -1,0 +1,8 @@
+__pycache__/
+.claude/
+*.pyc
+~$*
+example/
+ex2/
+results.xlsx
+verification_final.xlsx

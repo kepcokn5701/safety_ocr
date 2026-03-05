@@ -1,0 +1,25 @@
+웹 UI 실행 방법:
+
+Windows에서 명령 프롬프트 여는 방법:
+키보드 Win + R → cmd 입력 → Enter
+또는 시작 메뉴에서 "명령 프롬프트" 검색
+
+
+1. 터미널(명령 프롬프트)에서 실행
+
+cd "c:\Users\Admin\Desktop\project\safety ocr_project"
+python app_web.py
+
+2. 브라우저 자동 열림
+
+실행하면 http://localhost:5000 이 자동으로 열립니다
+안 열리면 브라우저에서 직접 http://localhost:5000 입력
+
+3. 종료
+
+터미널에서 Ctrl+C
+필수 파일 3개 (같은 폴더에 있어야 함):
+
+app_web.py — 웹 서버
+df_qr_batch.py — QR 추출 엔진
+hometax_verify.py — 홈택스 검증 엔진
