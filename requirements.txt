@@ -1,0 +1,9 @@
+flask
+pandas
+openpyxl
+PyMuPDF
+pyzbar
+opencv-python-headless
+pillow
+zxing-cpp
+requests
