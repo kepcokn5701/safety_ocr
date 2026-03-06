@@ -7,3 +7,4 @@ opencv-python-headless
 pillow
 zxing-cpp
 requests
+google-generativeai
