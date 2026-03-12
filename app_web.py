@@ -388,26 +388,28 @@ def _parse_execution_list(file_path):
 
 
 def _gemini_extract_approval(model, pdf_path):
-    """QR 추출 실패 시 Gemini Vision으로 PDF에서 24자리 승인번호를 OCR 추출"""
+    """Gemini Vision으로 PDF의 모든 페이지에서 24자리 승인번호를 OCR 추출 (복수 지원)"""
     import fitz
     from PIL import Image
     import re as _re
 
     doc = fitz.open(str(pdf_path))
     images = []
-    for page_num in range(min(len(doc), 3)):  # 첫 3페이지만 (승인번호는 보통 1페이지)
+    for page_num in range(min(len(doc), 10)):
         page = doc[page_num]
-        pix = page.get_pixmap(dpi=200)  # 고해상도로 추출
+        pix = page.get_pixmap(dpi=200)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         images.append(img)
     doc.close()
 
-    prompt = """이 세금계산서/영수증 이미지에서 국세청 승인번호(24자리 숫자)를 찾아줘.
-승인번호는 보통 "승인번호", "국세청승인번호", "NTS승인번호" 옆에 있거나,
+    prompt = """이 세금계산서/영수증 이미지들에서 국세청 승인번호(24자리 숫자+영문)를 모두 찾아줘.
+한 페이지에 세금계산서가 여러 장 있을 수 있으니 모든 승인번호를 빠짐없이 추출해.
+승인번호는 보통 "승인번호", "국세청승인번호" 옆에 있거나,
 8자리-8자리-8자리 형태(예: 20240306-12345678-90123456)로 표기돼.
 
 [응답 포맷] (순수 JSON만 출력, 마크다운 없이)
-{ "approval_number": "숫자24자리 또는 null", "confidence": "HIGH 또는 LOW" }"""
+{ "approval_numbers": ["승인번호1", "승인번호2", ...] }
+승인번호가 없으면 빈 배열로 응답해."""
 
     try:
         content = [prompt] + images
@@ -415,12 +417,12 @@ def _gemini_extract_approval(model, pdf_path):
         text = response.text.replace("```json", "").replace("```", "").strip()
         result = json.loads(text)
 
-        raw = result.get("approval_number")
-        if raw:
-            clean = _re.sub(r'[^0-9]', '', str(raw))
+        approvals = []
+        for raw in result.get("approval_numbers", []):
+            clean = _re.sub(r'[^0-9a-zA-Z]', '', str(raw))
             if len(clean) == 24:
-                return clean
-        return None
+                approvals.append(clean)
+        return approvals if approvals else None
     except Exception as e:
         log.warning(f"Gemini OCR 승인번호 추출 실패 ({pdf_path.name}): {e}")
         return None
@@ -521,29 +523,39 @@ def _worker_full_ai(folder: str, pdf_files: list):
         total = len(list_df)
         log.info(f"집행실적 {total}건, PDF {len(pdf_files)}개 — 매칭 시작")
 
-        # PDF QR 추출 + OCR 폴백
+        # PDF QR 추출 (멀티 QR 지원) + Gemini OCR 보완
         qr_map = {}  # 승인번호 → {pdf_path, qr_data}
         ocr_fallback_count = 0
+        # 엑셀에 있는 승인번호 목록 (매칭 대상)
+        excel_approvals = set(list_df["승인번호"].astype(str).str.strip().tolist())
+
         for i, pdf_path in enumerate(pdf_files):
             if _state["stop_requested"]:
                 break
             _send_progress(i, len(pdf_files), f"1단계: PDF QR 추출 중... {i+1}/{len(pdf_files)}")
-            record = qr.process_pdf(str(pdf_path))
-            approval = str(record.get("승인번호", "")).strip()
-            if approval and approval != "인식 불가":
-                qr_map[approval] = {"path": pdf_path, "record": record}
-            else:
-                # QR 실패 → Gemini Vision OCR로 승인번호 추출 시도
-                _send_progress(i, len(pdf_files), f"1단계: QR 실패, AI OCR 시도 중... {pdf_path.name}")
-                ocr_approval = _gemini_extract_approval(model, pdf_path)
-                if ocr_approval:
-                    qr_map[ocr_approval] = {"path": pdf_path, "record": {"승인번호": ocr_approval, "OCR": True}}
-                    ocr_fallback_count += 1
-                    log.info(f"OCR 폴백 성공: {pdf_path.name} → {ocr_approval}")
-                else:
+            records = qr.process_pdf_multi(str(pdf_path))
+            qr_found = 0
+            for record in records:
+                approval = str(record.get("승인번호", "")).strip()
+                if approval and approval != "인식 불가":
+                    qr_map[approval] = {"path": pdf_path, "record": record}
+                    qr_found += 1
+
+            # 엑셀에서 이 PDF에 매칭 안 된 승인번호가 아직 있으면 Gemini OCR 시도
+            unmatched = excel_approvals - set(qr_map.keys())
+            if unmatched and (qr_found == 0 or len(unmatched) > 0):
+                _send_progress(i, len(pdf_files), f"1단계: AI OCR 보완 중... {pdf_path.name}")
+                ocr_approvals = _gemini_extract_approval(model, pdf_path)
+                if ocr_approvals:
+                    for ocr_app in ocr_approvals:
+                        if ocr_app not in qr_map:
+                            qr_map[ocr_app] = {"path": pdf_path, "record": {"승인번호": ocr_app, "OCR": True}}
+                            ocr_fallback_count += 1
+                            log.info(f"OCR 보완 성공: {pdf_path.name} → {ocr_app}")
+                elif qr_found == 0:
                     log.warning(f"QR+OCR 모두 실패: {pdf_path.name}")
 
-        log.info(f"QR 추출 완료: {len(qr_map)}개 승인번호 인식 (OCR 폴백: {ocr_fallback_count}건)")
+        log.info(f"QR 추출 완료: {len(qr_map)}개 승인번호 인식 (OCR 보완: {ocr_fallback_count}건)")
 
         # 엑셀 ↔ PDF 매칭 + 결과 DataFrame 구성
         records = []
@@ -831,8 +843,8 @@ def _worker_extract(folder: str, pdf_files: list):
         for i, pdf_path in enumerate(pdf_files):
             log.info(f"[{i+1}/{total}] {pdf_path.name}")
             _send_progress(i, total, f"QR 스캔 중... {i+1}/{total}")
-            record = qr.process_pdf(str(pdf_path))
-            records.append(record)
+            multi = qr.process_pdf_multi(str(pdf_path))
+            records.extend(multi)
 
         col_order = ["파일명", "인식페이지", "승인번호", "공급자번호", "작성일자", "합계금액", "원본QR"]
         _state["df"] = pd.DataFrame(records, columns=col_order)
@@ -889,8 +901,8 @@ def _worker_full(folder: str, pdf_files: list):
                 break
             log.info(f"[1단계 {i+1}/{total}] {pdf_path.name}")
             _send_progress(i, total, f"1단계: QR 스캔 중... {i+1}/{total}")
-            record = qr.process_pdf(str(pdf_path))
-            records.append(record)
+            multi = qr.process_pdf_multi(str(pdf_path))
+            records.extend(multi)
 
         col_order = ["파일명", "인식페이지", "승인번호", "공급자번호", "작성일자", "합계금액", "원본QR"]
         _state["df"] = pd.DataFrame(records, columns=col_order)

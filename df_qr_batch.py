@@ -221,16 +221,20 @@ def detect_qr_from_image(img_array: np.ndarray) -> list[str]:
     variants.append(("2배확대", Image.fromarray(enlarged).convert("RGB"), "zxing"))
 
     # ── 탐지 실행 ────────────────────────────────
+    all_found = []
+    seen = set()
     for name, arr_or_pil, engine in variants:
         if engine == "pyzbar":
             found = _pyzbar_decode(arr_or_pil)
         else:
             found = _zxing_decode(arr_or_pil)
-        if found:
-            log.debug(f"    [{engine}/{name}] 인식 성공")
-            return found
+        for f in found:
+            if f not in seen:
+                all_found.append(f)
+                seen.add(f)
+                log.debug(f"    [{engine}/{name}] 인식 성공")
 
-    return []
+    return all_found
 
 
 # ══════════════════════════════════════════════
@@ -320,6 +324,89 @@ def _fail_record(filename: str, reason: str = "인식 불가") -> dict:
         "합계금액":   "",
         "원본QR":    "",
     }
+
+
+def process_pdf_multi(pdf_path: str) -> list[dict]:
+    """
+    단일 PDF의 모든 페이지에서 QR 코드를 모두 추출하여
+    복수의 결과를 리스트로 반환. (한 페이지에 QR이 여러 개 있을 수 있음)
+    """
+    filename = Path(pdf_path).name
+    log.info(f"처리 중(멀티): {filename}")
+
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        log.error(f"  PDF 열기 실패: {e}")
+        return [_fail_record(filename, f"PDF 열기 오류: {e}")]
+
+    mat = fitz.Matrix(ZOOM, ZOOM)
+    total_pages = len(doc)
+    all_records = []
+    seen_approvals = set()  # 동일 승인번호 중복 방지
+
+    for page_no in range(total_pages):
+        page = doc[page_no]
+        log.info(f"  페이지 {page_no + 1}/{total_pages} 스캔 (멀티)")
+
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        img_bytes = pix.tobytes("png")
+        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        arr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+        # ── 전체 이미지 탐지 (복수 QR) ──
+        qr_texts = detect_qr_from_image(arr)
+        for qr_text in qr_texts:
+            parsed = parse_qr_data(qr_text)
+            approval = parsed.get("승인번호", "")
+            if approval and approval not in seen_approvals:
+                parsed["파일명"] = filename
+                parsed["인식페이지"] = page_no + 1
+                all_records.append(parsed)
+                seen_approvals.add(approval)
+                log.info(f"  QR 발견 (페이지 {page_no+1}): {approval}")
+
+        # ── 상/하 2분할 탐지 (한 페이지에 세금계산서 2장) ──
+        h, w = arr.shape[:2]
+        for half_idx, (y_start, y_end) in enumerate([(0, h // 2), (h // 2, h)]):
+            crop_half = arr[y_start:y_end, 0:w]
+            qr_texts = detect_qr_from_image(crop_half)
+            for qr_text in qr_texts:
+                parsed = parse_qr_data(qr_text)
+                approval = parsed.get("승인번호", "")
+                if approval and approval not in seen_approvals:
+                    parsed["파일명"] = filename
+                    parsed["인식페이지"] = page_no + 1
+                    all_records.append(parsed)
+                    seen_approvals.add(approval)
+                    half_name = "상단" if half_idx == 0 else "하단"
+                    log.info(f"  QR 발견 (페이지 {page_no+1}, {half_name}): {approval}")
+
+        # ── 3×3 분할 탐지 ──
+        for row in range(3):
+            for col in range(3):
+                y1, y2 = row * h // 3, (row + 1) * h // 3
+                x1, x2 = col * w // 3, (col + 1) * w // 3
+                crop = arr[y1:y2, x1:x2]
+                qr_texts = detect_qr_from_image(crop)
+                for qr_text in qr_texts:
+                    parsed = parse_qr_data(qr_text)
+                    approval = parsed.get("승인번호", "")
+                    if approval and approval not in seen_approvals:
+                        parsed["파일명"] = filename
+                        parsed["인식페이지"] = page_no + 1
+                        all_records.append(parsed)
+                        seen_approvals.add(approval)
+                        log.info(f"  QR 발견 (페이지 {page_no+1}, 구역 {row},{col}): {approval}")
+
+    doc.close()
+
+    if not all_records:
+        log.warning(f"  QR 인식 불가: {filename}")
+        return [_fail_record(filename)]
+
+    log.info(f"  {filename}: QR {len(all_records)}개 인식")
+    return all_records
 
 
 # ══════════════════════════════════════════════
